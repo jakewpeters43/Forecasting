@@ -1,0 +1,201 @@
+---
+title: "Project_1_HW"
+author: "Jake Peters"
+date: "10/5/2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(readr)
+library(fpp2)
+library(ggfortify)
+library(ggplot2)
+library(readxl)
+library(tidyr)
+library(reshape2)
+library(lubridate)
+library(tidyverse)
+```
+This dataset is a measure of US air pollution from 2000 to 2006. I will be looking at daily pollution measures of Ozone, or O3, in Phoenix, Arizona, measured once for each day from 2000 to 2006. This data is taken from https://www.kaggle.com/sogun3/uspollution.
+```{r, include = FALSE}
+ 
+pollute_data <- read_csv("pollution_us_2000_2006.csv")
+
+head(pollute_data)
+
+pollute_data <- pollute_data %>% filter(`State`== "Arizona" & `County Code` == 13 & `City` == "Phoenix" & `Site Num` =="3002")
+duplicated(pollute_data$`Date Local`)
+pollute_data
+pollute_data1 <- pollute_data[!duplicated(pollute_data$`Date Local`), ]
+
+pollute_data1$rownumber = 1:nrow(pollute_data1)
+pollute_data1 <- pollute_data1[ , c(30,2:29)]
+
+```
+
+```{r}
+#pollute_data1 <- head(pollute_data1, 800)
+ggplot(data = pollute_data1) + geom_line(aes(x = `rownumber`, y = `O3 Mean`)) + xlab("time") + ggtitle("Line of Ozone")
+ggplot(data = pollute_data1) + geom_point(aes(x = `rownumber`, y = `O3 Mean`)) + xlab("time") +ggtitle("Points of Ozone")
+ggplot(data = pollute_data1) +geom_bar(aes(y = `O3 Mean`)) + ggtitle("Bar of Ozone")
+```
+It does not look like this data needs transforming. It does not funnel outward during the events of the time series. It looks like it mostly stays consistent in its deviation from the average throughout the series. However, it also looks like there is plenty of seasonality in the Ozone data. This could be measured by setting the h values of our forecasts to 365, or the number of days in a year, so that the forecasts are comparing to data from previous years.
+
+
+```{r}
+pollute_data1 <- pollute_data1 %>% mutate(date = mdy(pollute_data1$`Date Local`))
+pO3 <- pollute_data1 %>% select(`O3 Mean`)
+pO3 <- ts(pO3, start = c(2000,1,1), frequency = 365)
+theData = pO3
+len = length(theData)
+h = 1100
+dataDF = data.frame(x = 1:len, value = as.numeric(theData),name = "data")
+snaiveModel = snaive(theData, h = h)
+snaiveDF = data.frame(x = (len+1):(len + h), value = snaiveModel$mean,name = "seasonal")
+naiveModel = naive(theData,h = h)
+naiveDF = data.frame(x = (len+1):(len + h), value = naiveModel$mean,name = "naive")
+meanModel = meanf(theData,h = h)
+meanDF = data.frame(x = (len+1):(len + h), value = meanModel$mean,name = "mean")
+driftModel = rwf(theData,h = h,drift = TRUE)
+driftDF= data.frame(x = (len+1):(len + h), value = driftModel$mean,name = "drift")
+
+# pO3 = as.ts(pO3,frequency = 365)
+timeStuff = 1:length(pO3)
+s1 = sin(2*pi/365*(timeStuff-200))
+c1 = cos(2*pi/365*(timeStuff-200))
+newTime = (len+1):(len + h)
+newS1 = sin(2*pi/365*(newTime))
+newC1 = cos(2*pi/365*(newTime))
+
+fModel = tslm(pO3 ~ timeStuff + s1 + c1)
+fForecast = forecast(fModel,data.frame(timeStuff=newTime, s1 = newS1, c1 = newC1))
+fModelDF= data.frame(x = (len+1):(len + h), value = fForecast$mean,name = "fourier")
+
+graphingDF = rbind(dataDF,naiveDF,meanDF,driftDF, fModelDF)
+colorScheme = c("gray","red","blue","green","black", "orange" )
+names(colorScheme) = c("data","seasonal","naive","mean","drift", "fourier")
+
+ggplot(graphingDF,aes(x = x, y = value, color = name)) +
+  geom_line() +
+  scale_color_manual(values = colorScheme) +
+  ggtitle("Bootstrapped Predictions of O3 Levels") + 
+  xlab("time")+
+  ylab("Ozone levels")
+
+# fitted values and check residuals
+# naiveModel$fitted
+# meanModel$fitted
+# driftModel$fitted
+# snaiveModel$fitted
+# fForecast$fitted
+
+autoplot(naiveModel$fitted) + ggtitle("niave fitted values")
+autoplot(meanModel$fitted) + ggtitle("mean fitted values")
+autoplot(driftModel$fitted)+ ggtitle("drift fitted values")
+autoplot(snaiveModel$fitted)+ ggtitle("sniave fitted values")
+autoplot(fForecast$fitted)+ ggtitle("fourier fitted values")
+
+checkresiduals(naiveModel)
+checkresiduals(meanModel)
+checkresiduals(driftModel)
+checkresiduals(snaiveModel)
+checkresiduals(fForecast)
+
+
+
+
+```
+These residuals are not residuals we would desire in a forecast. They are all way too correlated, with some looking like they could have some extra patterns to be parceled out as well. However, the means of the residuals are each at about zero, which is what is desired, meaning they are not biased. For variance, it is certainly not constant, and in some cases is actually wave-shaped, indicative of underlying patterns. The residuals are mostly normally distributed, though, which I think points more to the sheer amount of data than to actual well-performing residuals. These are garbage residuals which tell us that our models (and forecasts, eventually) are not very good, which is indicative of the simplicity of the models. The residuals imply that the prediction intervals will probably be inaccurate as well as being larger because of the greater uncertainty in the data.
+```{r}
+theData = pO3
+len = length(theData)
+
+trainingData = window(theData, start = start(theData), end = c(2005,365))
+testingData = window(theData,start = c(2006),end= c(2006,365))
+h = length(testingData)
+T = length(trainingData)
+trainingDF = data.frame(x = 1:T, value = as.numeric(trainingData),name = "training")
+testingDF = data.frame(x = (T+1):(T + h), value = as.numeric(testingData),name = "testing")
+snaiveModel = snaive(trainingData,h = h)
+snaiveDF = data.frame(x = (T+1):(T + h), value = snaiveModel$mean,name = "seasonal")
+naiveModel = naive(trainingData,h = h)
+naiveDF = data.frame(x = (T+1):(T + h), value = naiveModel$mean,name = "naive")
+meanModel = meanf(trainingData,h = h)
+meanDF = data.frame(x = (T+1):(T + h), value = meanModel$mean,name = "mean")
+driftModel = rwf(trainingData,h = h,drift = TRUE)
+driftDF= data.frame(x = (T+1):(T + h), value = driftModel$mean,name = "drift")
+
+timeStuff = 1:length(trainingData)
+s1 = sin(2*pi/365*(timeStuff-200))
+c1 = cos(2*pi/365*(timeStuff-200))
+newTime = (len+1):(len + h)
+newS1 = sin(2*pi/365*(newTime))
+newC1 = cos(2*pi/365*(newTime))
+
+fModel = tslm(trainingData ~ timeStuff + s1 + c1)
+fForecast = forecast(fModel,data.frame(timeStuff=newTime, s1 = newS1, c1 = newC1))
+fModelDF= data.frame(x = (T+1):(T + h), value = fForecast$mean,name = "fourier")
+
+
+graphingDF = rbind(trainingDF,fModelDF, snaiveDF, naiveDF,meanDF,driftDF,testingDF)
+
+colorScheme = c("gray","red","blue","green","black", "orange", "black" )
+names(colorScheme) = c("training","fourier", "seasonal","naive","mean","drift","testing")
+
+ggplot(graphingDF,aes(x = x, y = value,color = name)) +
+  geom_line() +
+  scale_color_manual(values = colorScheme) +
+  ggtitle("Testing data forecasts for each rudimentary method") + 
+  xlab("time") +
+  ylab("Ozone level")
+accuracy(naiveModel,testingData)
+accuracy(snaiveModel,testingData)
+accuracy(driftModel,testingData)
+accuracy(meanModel,testingData)
+accuracy(fForecast, testingData)
+
+```
+Here, we will use the RMSE and MAE as measures for assessing rank of performance of forecast starting from best (1) to worst (5). The order goes like this: with the lowest RMSE/MAE, we have 1. snaive 2. fourier 3. mean 4. naive 5. drift. This goes with the eye test as well, as the seasonal naive and fourier forecasts seem to capture much more of the seasonality in the data than the other forecasting methods, which probably leads to lower MAE for the better, more seasonal models. 
+
+```{r, include = FALSE}
+dataset <- pO3
+h = 5
+tsCV(dataset,naive, h=h)^2  %>% colMeans(na.rm = TRUE)
+tsCV(dataset,snaive, h=h)^2  %>% colMeans(na.rm = TRUE)
+tsCV(dataset,rwf, drift = TRUE, h=h)^2  %>% colMeans(na.rm = TRUE)
+tsCV(dataset,meanf, h=h)^2  %>% colMeans(na.rm = TRUE)
+#tsCV(dataset,fForecast, h=h)^2  %>% colMeans(na.rm = TRUE)
+
+tsCV(dataset,naive, h=h) %>% abs() %>% colMeans(na.rm = TRUE)
+tsCV(dataset,snaive, h=h) %>% abs() %>% colMeans(na.rm = TRUE)
+tsCV(dataset,rwf, drift = TRUE, h=h) %>% abs() %>% colMeans(na.rm = TRUE)
+tsCV(dataset,meanf, h=h) %>% abs() %>% colMeans(na.rm = TRUE)
+#tsCV(dataset,fForecast, h=h) %>% abs() %>% colMeans(na.rm = TRUE)
+
+
+```
+
+ For time series cross-validation, we have in order from best to worst 1. niave 2. drift 3. mean 4. snaive. 
+ This is vastly different than the testing/training accuracy ranks, perhaps because the forecast was over such a shorter period of time for this measure, at only about 5 steps into the future, whereas the other forecasting rank measure was about 365 steps into the future. This could lead to more seasonality being prevalent in the longer time period, which would lead the naive, drift, and mean forecasts to be off by larger amounts on the longer forecasts. However, they conversely would be better on shorter forecasts, especially if the days were a bit off the mark for the seasonality in the snaive and fourier models.
+```{r, include=FALSE}
+forecast(naiveModel, newdata=data.frame(trend=c(10, 200)))
+forecast(snaiveModel, newdata = data.frame(trend = c(10,200)))
+```
+
+```{r}
+# naive forecast
+checkresiduals(naiveModel)
+
+
+# seasonal naive forecast
+checkresiduals(snaiveModel)
+
+
+
+```
+For this problem, I will take my best model from the testing data, aka the seasonal naive model, for one forecast, and the best model according to the time series cross-validation, or the naive model.
+ Here, we have a forecast for the naive model. This is predicting a point forecast of .0125 units of O3 for every forecast, since it is naive. For the early forecast, it is predicting a low 5% of .00049 units, and a high 95% of .024 units. For the 80th intervals, it is at (.0047,.0204). For the long term forecast, it is predicting a 95% interval of (-.026, .051), and for 80th, it is (-.012, .037). The highly correlated residuals are one reason for me to not trust this forecast. Another is that the confidence intervals are actually negative for the lower bounds! This surely is a sign that it must be thrown in the dumpster.
+ For our next forecast, we use the seasonal naive model, which was the best on our test set. This has a point forecast of .01055 units of O3 for our early forecast with 95% intervals of (-.009,.311) and 80% intervals of (-.0028, .0240). For the long term forecast, we have a forecast of .004542 units of O3 with 95% intervals of (-.016, .025) and 80% intervals of (-.0087, .0180). The residuals are highly correlated here, with a pattern, so I do not trust this forecast. Similarly to the naive forecast, it is also predicting negatives in the low intervals, which is impossible physically, so this forecast also is probably not the greatest as well. Hopefully we will get better methods in the future.
