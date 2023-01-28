@@ -1,0 +1,574 @@
+---
+title: "Final_Project"
+author: "Jake Peters"
+date: "11/30/2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,message=FALSE, warning=FALSE)
+library(readr)
+library(fpp2)
+library(ggplot2)
+library(ggfortify)
+library(readxl)
+library(tidyr)
+library(reshape2)
+library(lubridate)
+library(urca)
+library(dplyr)
+library(Metrics)
+```
+There are three separate datasets I will be using for this Final Project. 
+The first is a set of daily Crimes reported by the Baltimore government's police department. This data was found on https://data.baltimorecity.gov/datasets/part1-crime-data. It has reports involving crimes such as larceny, robbery, assault, and many more! It also contains neighborhood data, location, and date/time among others. It is a robust, versatile dataset that enables a lot of flexibility in how one can clean it to make forecasts. I chose to aggregate the data by day, so that all the crimes for each day are added up to a daily crime total for that day. This is in the calendar year of 2021.This is the data that I will try to forecast, specifically attempting to forecast the number of crimes per day based on various regressers.
+
+The next dataset is a set of 911 calls from the common people to the city of Baltimore's call center. This dataset was found in the same website as the previous dataset, at https://data.baltimorecity.gov/datasets/baltimore::911-calls-for-service-2021/about. This data contains date/time of calls, the district of the call, and the priority of the call, such as High, which would be more dangerous, to Low or non-Emergency, which would not be as crucial to respond. This data will also be aggregated into daily data in 2021, split by priority.
+
+The third dataset I will incorporate into this project is a set of Baltimore weather data from 2021. It involves mintemp, maxtemp, and average temperature for each day from https://www.visualcrossing.com/weather-history/baltimore. I will be using average temperature in this project.
+
+The data I will be using for this project is just on the 2021 year starting in January 2021. It would have been nice to have obtained data over multiple years for the 911 calls data, but unfortunately the baltimore website has dead links for those (missing) datasets. With that being said, let's read the datasets in and see which priorities are available to choose from.
+```{r,include = FALSE}
+# find datasets on temperature and pollution dataset
+calls <- read_csv("C:/Users/13204/Documents/Forecasting/911_Calls_for_Service_2021.csv")
+
+crime <- read_csv("C:/Users/13204/Documents/Forecasting/Part1_Crime_data.csv")
+
+weather <- read_excel("C:/Users/13204/Documents/Forecasting/baltimoreweather.xlsx")
+calls %>% distinct(priority)
+```
+Next, I cleaned the data, making the date into a proper format, aggregating the total crimes and total calls by priority for each day, and merging the dataset values together via Date.
+```{r,include = FALSE}
+
+weather$date <- as.Date(weather$datetime)
+weather <- weather %>% select(c(date, temp, precip,windspeed))
+crime$CrimeDate <- as.Date(crime$CrimeDateTime)
+
+CrimesPerDay <- crime %>% group_by(CrimeDate) %>% summarise(totalCrimes = n())
+CrimesPerDay
+CrimesPerDay %>% subset(CrimeDate> "2020-11-26" & CrimeDate < "2021-11-28")
+
+calls$CallsDate <- as.Date(calls$callDateTime) 
+CallsPerDay <- calls %>% group_by(CallsDate) %>% summarize(totalCalls = n())
+CallsPerDay %>% subset(CallsDate> "2020-11-26" & CallsDate < "2021-11-28")
+LowPriority <- calls %>% filter(priority %in% c("Low","Non-Emergency"))
+LowPriority  <- LowPriority %>% group_by(CallsDate) %>% summarize(totalCalls = n())
+HighPriority <- calls %>% filter(priority %in% c("High","Emergency"))
+HighPriority  <- HighPriority %>% group_by(CallsDate) %>% summarize(totalCalls = n())
+df <- merge(CrimesPerDay, CallsPerDay, by.x = c("CrimeDate"), by.y = c("CallsDate"))
+df  <- merge(df, LowPriority, by.x = c("CrimeDate"), by.y = c("CallsDate"))
+df  <- merge(df, HighPriority, by.x = c("CrimeDate"), by.y = c("CallsDate"))
+df  <- merge(df, weather, by.x = c("CrimeDate"), by.y = c("date"))
+#df <- df %>% filter(totalCalls > 2500)
+```
+Here, totalCrimes is the number of Crimes per day reported, totalCalls.x is the total number of 911 calls that day, totalCalls.y is the number of low or non-Emergency calls that day, totalCalls is the number of high or Emergency 911 daily calls, temp is the daily average temperature, and windspeed is the daily average windspeed.
+Now, we can make scatterplots for some exploratory visualizations of the data to find out which columns can be used to predict the amount of daily crimes in Baltimore.s
+```{r}
+p1 <- ggplot(df) + geom_point(aes(y = totalCrimes,  x = totalCalls.x))
+simplelinear <- lm(totalCrimes ~ totalCalls.x, data = df)
+summary(simplelinear)
+checkresiduals(simplelinear)
+coef.y <- coef(simplelinear)
+plot.y <- qplot(y=totalCrimes, x=totalCalls.x, data=df)
+plot.y + geom_abline(intercept=coef.y[1],
+  slope=coef.y[2]) + xlab("Total 911 Daily Calls") + ylab("Daily Crimes") + ggtitle("Daily Crimes vs Daily 911 Calls")
+```
+Taking all the calls into consideration, there is actually a negative correlation here. WHaaat?! This threw me off guard. However, when thinking about it more, it seems that there are a lot of low-emergency calls, which do not become crimes. So these are obscuring the important calls. 
+
+```{r}
+p1 <- ggplot(df) + geom_point(aes(y = totalCrimes,  x = totalCalls.y))
+simplelinear <- lm(totalCrimes ~ totalCalls.y, data = df)
+summary(simplelinear)
+checkresiduals(simplelinear)
+coef.y <- coef(simplelinear)
+plot.y <- qplot(y=totalCrimes, x=totalCalls.y, data=df)
+plot.y + geom_abline(intercept=coef.y[1],
+  slope=coef.y[2]) + xlab("Non-Emergency 911 Daily Calls") + ylab("Daily Crimes") + ggtitle("Daily Crimes vs Low-Priority 911 Calls")
+
+```
+Here there is a more pronounced negative correlation, as the non-Emergency calls are shown to be the set that is truly negatively correlated with daily crimes. There is an R-squared value of .26, which is not amazing, but does explain some variation in the set. This could be used to predict crimes, but the effectiveness remains to be seen.
+```{r}
+p1 <- ggplot(df) + geom_point(aes(y = totalCrimes,  x = totalCalls))
+simplelinear <- lm(totalCrimes ~ totalCalls, data = df)
+summary(simplelinear)
+checkresiduals(simplelinear)
+coef.y <- coef(simplelinear)
+plot.y <- qplot(y=totalCrimes, x=totalCalls, data=df)
+plot.y + geom_abline(intercept=coef.y[1],
+  slope=coef.y[2])+ xlab("Emergency 911 Daily Calls") + ylab("Daily Crimes") + ggtitle("Daily Crimes vs High-Priority 911 Calls")
+
+
+
+```
+In this plot, it shows a positive correlation between crimes and important 911 calls. This intuitively makes sense, because a lot of those calls are probably about some sort of violent act or theft that is taking place. The R-squared is the best yet, at .39.
+```{r}
+p1 <- ggplot(df) + geom_point(aes(y = totalCrimes,  x = temp))
+simplelinear <- lm(totalCrimes ~ temp, data = df)
+summary(simplelinear)
+checkresiduals(simplelinear)
+coef.y <- coef(simplelinear)
+plot.y <- qplot(y=totalCrimes, x=temp, data=df)
+plot.y + geom_abline(intercept=coef.y[1],
+  slope=coef.y[2])+ xlab("Temperature") + ylab("Daily Crimes") + ggtitle("Daily Crimes vs Daily Temperature")
+
+```
+In this plot, the temperature is positively correlated with crimes. This makes sense; criminal activity happens more when it is warmer outside. It could also be a seasonal yearly thing, but because I only have one year of data, I will be ignoring that possibility. We have an R-squared of .34, so better than low-priority, but worse than high-priority.
+
+```{r}
+p1 <- ggplot(df) + geom_jitter(aes(y = totalCrimes,  x = precip))
+simplelinear <- lm(totalCrimes ~ precip, data = df)
+#summary(simplelinear)
+#checkresiduals(simplelinear)
+coef.y <- coef(simplelinear)
+plot.y <- qplot(y=totalCrimes, x=precip, data=df)
+plot.y + geom_abline(intercept=coef.y[1],
+  slope=coef.y[2])+ xlab("Total Daily Precipitation") + ylab("Daily Crimes") + ggtitle("Daily Crimes vs Precipitation")
+
+
+
+
+```
+here, the graph is garp. It does not show any sort of correlation. Also, a lot of days have no precip, which would throw off any sort of forecasting I would try without some sort of feature engineering. Therefore, I will not incorporate precip into future forecasts.
+
+```{r}
+p1 <- ggplot(df) + geom_jitter(aes(y = totalCrimes,  x = windspeed))
+simplelinear <- lm(totalCrimes ~ windspeed, data = df)
+#summary(simplelinear)
+#checkresiduals(simplelinear)
+coef.y <- coef(simplelinear)
+plot.y <- qplot(y=totalCrimes, x=windspeed, data=df)
+plot.y + geom_abline(intercept=coef.y[1],
+  slope=coef.y[2])+ xlab("Windspeed (mph)") + ylab("Daily Crimes") + ggtitle("Daily Crimes vs Windspeed")
+
+
+```
+Average daily windspeed actually has a very slight negative correlation with crime, but because it is so small, and we already have temperature to use, I will not incorporate it into future forecasts.
+
+Now let's look at a bunch of correlation plots to see if there are extra patterns we are missing.
+```{r}
+GGally::ggpairs(df)
+```
+From this overview, it seems we already discussed the strongest correlations out there. Temperature and CrimeDate is the most interesting shape, but it is probably something that has built-in seasonality with yearly data, which is a fact of nature unrelated to crimes. Other promising plots are high-priority calls and low-priority calls, which were already discussed.
+
+Now that we made scatterplots, I am going to transform the crime data using the BoxCox function to see if it helps normalize the variation in the data, if needed.
+```{r, warning=FALSE}
+plot(ts(df$totalCrimes))
+checkresiduals(ts(df$totalCrimes))
+
+lambda <- BoxCox.lambda(ts(df$totalCrimes))
+
+autoplot(BoxCox(ts(df$totalCrimes),lambda)) + ggtitle("Transformed Crime Data")
+```
+Upon doing a transformation of this data using the BoxCox function, there is not enough change to the resulting data to warrant using a transformed version of the data. Therefore, the original untransformed data will be used.
+
+Now I will split data into training and testing data for ts forecasting validation using 80-20 split. This has ramifications for later on, because the split just happens to coincide with a peak in the data, which is followed by a dip in the 20% of the data. Because our forecasts are trained in the 80%, our forecasts will be off kilter compared to the actual testing data. Later on I will use time series cross validation to try to correct for that.
+```{r,include=FALSE}
+nrow(df)
+# 331
+nrow(df)*.8
+# 264
+331-264
+# 67
+train <- df[1:264,]
+test <- df[264:nrow(df),]
+```
+
+Now I will try decomposing the crime data to see if there is a seasonal component.
+```{r}
+
+#decMonthly <- stl(ts(df$totalCrimes,frequency = 12),s.window = 13,t.window = 13, robust = TRUE)
+#autoSTLMonthly <- mstl(ts(df$totalCrimes,frequency = 12))
+#plot(autoSTLMonthly)
+autoSTL <- mstl(ts(df$totalCrimes))
+plot(autoSTL)
+#plot(decMonthly)
+#decMonthly
+```
+It does not look like there is any seasonal component, especially since the automated STL function did not find a seasonal part. There is a linear part to the data, with residuals. I thought about using a fourier series on the data, but because it does not seem seasonal, and is only over 1 year, there does not seem to be a reason to use fourier terms.
+
+I will do  autoarimas of various regressers using the training data to find which variables have lower AICc values/RMSE values.
+
+Let's make the first forecast. Using all 911 calls.
+```{r}
+#allCallsdf <- ts(df$totalCrimes, start = c(2021, as.numeric(format(df$CrimeDate[1], "%j"))), freq = 365) 
+#plot(allCallsdf)
+allMod <- auto.arima(ts(train$totalCrimes, start = c(2021,1), freq = 365), xreg = train$totalCalls.x)
+summary(allMod)
+checkresiduals(allMod)
+#forecast = predict(allMod,67)
+fc <- forecast::forecast(allMod$fitted,68)
+#ggplot() + geom_line(data = fc,aes(x=ts(fc$fitted))) + autolayer(ts(test$totalCrimes))
+fc_df <- as.data.frame(fc)
+rmse <- rmse(as.numeric(unlist(as.data.frame(test$totalCrimes))), as.numeric(unlist(as.data.frame(fc_df[1]))))
+```
+This auto.arima chose residuals of 1,1,1, which is a random walk with first differencing and a moving average term.
+Final RMSE of 21.06 for training and testing.
+This next arima will probably have some good predictive value compared to the others, since it is using high-priority 911  calls, which was shown to have the highest R-squared value.
+  
+1. totalCrimes and high 911 calls 
+```{r}
+highMod <- auto.arima(ts(train$totalCrimes, start = c(2021,1), freq = 365), xreg = train$totalCalls)
+summary(highMod)
+checkresiduals(highMod)
+#forecast = predict(allMod,67)
+fc <- forecast::forecast(highMod$fitted,68)
+#ggplot() + geom_line(data = fc,aes(x=ts(fc$fitted))) + autolayer(ts(test$totalCrimes))
+fc_df <- as.data.frame(fc)
+rmse <- rmse(as.numeric(unlist(as.data.frame(test$totalCrimes))), as.numeric(unlist(as.data.frame(fc_df[1]))))
+ggplot() + autolayer(highMod$fitted) + autolayer(ts(test$totalCrimes,start = c(2021,264), freq = 365)) + autolayer(ts(fc_df[1],start = c(2021,264), freq = 365)) + xlab("Time") + ylab("Daily Crimes") + ggtitle("Daily Crimes vs High-Priority 911 Calls") +
+  scale_color_manual(labels = c("Fitted Values", "Forecast Values", "Test Values"), values = c("blue", "red", "green"))
+```
+Final RMSE of 20.68 for training and testing. This is basically a random walk without drift, which misses the future dip in the data, a common theme in these next few plots.
+
+2. totalCrimes and low 911 calls, 
+
+```{r}
+lowMod <- auto.arima(ts(train$totalCrimes, start = c(2021,1), freq = 365), xreg = train$totalCalls.y)
+summary(lowMod)
+checkresiduals(lowMod)
+#forecast = predict(allMod,67)
+fc <- forecast::forecast(lowMod$fitted,68)
+#ggplot() + geom_line(data = fc,aes(x=ts(fc$fitted))) + autolayer(ts(test$totalCrimes))
+fc_df <- as.data.frame(fc)
+rmse <- rmse(as.numeric(unlist(as.data.frame(test$totalCrimes))), as.numeric(unlist(as.data.frame(fc_df[1]))))
+ggplot() + autolayer(lowMod$fitted) + autolayer(ts(test$totalCrimes,start = c(2021,264), freq = 365)) + autolayer(ts(fc_df[1],start = c(2021,264), freq = 365))+ xlab("Time") + ylab("Daily Crimes") + ggtitle("Daily Crimes vs Low-Priority 911 Calls") +
+  scale_color_manual(labels = c("Fitted Values", "Forecast Values", "Test Values"), values = c("blue", "red", "green"))
+```
+Final RMSE of 20.86 for training and testing. Slightly worse than high-priority data, still a random walk naive forecast.
+
+3. autoarimas with both high and low regressers.
+```{r}
+highLowRegresser <- glm(data = train, train$totalCalls ~ train$totalCalls.y)
+highLowMod <- auto.arima(ts(train$totalCrimes, start = c(2021,1), freq = 365), xreg = highLowRegresser$fitted.values)
+summary(highLowMod)
+checkresiduals(highLowMod)
+fc <- forecast::forecast(highLowMod$fitted,68)
+#ggplot() + geom_line(data = fc,aes(x=ts(fc$fitted))) + autolayer(ts(test$totalCrimes))
+fc_df <- as.data.frame(fc)
+rmse <- rmse(as.numeric(unlist(as.data.frame(test$totalCrimes))), as.numeric(unlist(as.data.frame(fc_df[1]))))
+ggplot() + autolayer(highLowMod$fitted) + autolayer(ts(test$totalCrimes,start = c(2021,264), freq = 365)) + autolayer(ts(fc_df[1],start = c(2021,264), freq = 365))+ xlab("Time") + ylab("Daily Crimes") + ggtitle("Daily Crimes vs High and Low Priority 911 Calls") +
+  scale_color_manual(labels = c("Fitted Values", "Forecast Values", "Test Values"), values = c("blue", "red", "green"))
+
+```
+Here there is an RMSE of 20.86, which is slightly worse than the High-priority calls alone, which means that the low-priority data basically gets in the way of producing good forecasts.
+4. autoarima with just temperature.
+
+```{r}
+tempMod <- auto.arima(ts(train$totalCrimes, start = c(2021,1), freq = 365), xreg = train$temp)
+summary(tempMod)
+plot(tempMod$fitted)
+checkresiduals(tempMod)
+fc <- forecast::forecast(tempMod$fitted,68)
+#ggplot() + geom_line(data = fc,aes(x=ts(fc$fitted))) + autolayer(ts(test$totalCrimes))
+fc_df <- as.data.frame(fc)
+rmse <- rmse(as.numeric(unlist(as.data.frame(test$totalCrimes))), as.numeric(unlist(as.data.frame(fc_df[1]))))
+ggplot() + autolayer(tempMod$fitted) + autolayer(ts(test$totalCrimes,start = c(2021,264), freq = 365)) + autolayer(ts(fc_df[1],start = c(2021,264), freq = 365))+ xlab("Time") + ylab("Daily Crimes") + ggtitle("Daily Crimes vs Temperature") +
+  scale_color_manual(labels = c("Fitted Values", "Forecast Values", "Test Values"), values = c("blue", "red", "green"))
+
+
+```
+Here, the RMSE is 19.04. In my belief, it has better RMSE values not because it is inherently predicting the data, but rather because the ARIMA is doing different parameters, along with the testing data being drastically different than the ARIMA expects. I am saying that it is basically luck that the ARIMA chose a better model that just happened to coincide more with the future test data out of pure chance. If given a more fortunate split, I believe that the high-priority one would perform the best. I am going to put that to the test right now.
+
+```{r,warning = FALSE}
+#nrow(df)
+# 331
+#nrow(df)*.95
+# 298
+#331-315
+# 33
+train2 <- df[1:315,]
+test2 <- df[315:nrow(df),]
+highMod2 <- auto.arima(ts(train2$totalCrimes, start = c(2021,1), freq = 365), xreg = train2$totalCalls,allowdrift = TRUE)
+#summary(highMod2)
+#plot(highMod2$fitted)
+checkresiduals(highMod2)
+#forecast = predict(allMod,67)
+fc <- forecast::forecast(highMod2$fitted,16)
+#ggplot() + geom_line(data = fc,aes(x=ts(fc$fitted))) + autolayer(ts(test$totalCrimes))
+fc_df <- as.data.frame(fc)
+rmse <- rmse(as.numeric(unlist(as.data.frame(test2$totalCrimes))), as.numeric(unlist(as.data.frame(fc_df[1]))))
+ggplot() + autolayer(highMod2$fitted) + autolayer(ts(test2$totalCrimes,start = c(2021,315), freq = 365)) + autolayer(ts(fc_df[1],start = c(2021,315), freq = 365)) + xlab("Time") + ylab("Daily Crimes") + ggtitle("Daily Crimes vs High-Priority 911 Calls") +
+  scale_color_manual(labels = c("Fitted Values", "Forecast Values", "Test Values"), values = c("blue", "red", "green"))
+
+```
+The auto-arima still chose the same parameters, but there is now a lower RMSE value on the shorter test window. This is because the data is naturally closer to the dip at the end, out of pure luck. Thus my theory is confirmed that the temp data was better out of pure chance. In my heart of hearts, I still think high-priority calls are the best predictor, even if I do not have much hard evidence besides the R-squared value from the earlier linear model.
+5. autoarimas with all three
+
+```{r}
+allRegresser <- glm(data = train, train$totalCalls ~ (train$totalCalls.y + train$totalCalls + train$temp))
+threeMod <- auto.arima(ts(train$totalCrimes, start = c(2021,1), freq = 365), xreg = allRegresser$fitted.values)
+#summary(threeMod)
+#plot(threeMod$fitted)
+checkresiduals(threeMod)
+fc <- forecast::forecast(threeMod$fitted,68)
+#ggplot() + geom_line(data = fc,aes(x=ts(fc$fitted))) + autolayer(ts(test$totalCrimes))
+fc_df <- as.data.frame(fc)
+rmse <- rmse(as.numeric(unlist(as.data.frame(test$totalCrimes))), as.numeric(unlist(as.data.frame(fc_df[1]))))
+ggplot() + autolayer(threeMod$fitted) + autolayer(ts(test$totalCrimes,start = c(2021,264), freq = 365)) + autolayer(ts(fc_df[1],start = c(2021,264), freq = 365))+ xlab("Time") + ylab("Daily Crimes") + ggtitle("Daily Crimes vs Mixed 911 Calls") +
+  scale_color_manual(labels = c("Fitted Values", "Forecast Values", "Test Values"), values = c("blue", "red", "green"))
+
+
+```
+Here, the RMSE is 19.6.
+
+This RMSE is better than the high and low forecasts, but worse than temperature. Again, this is probably pure chance.
+
+Here we have TSCV with Dr. Axvig's special function to split the data into different windows to validate forecasts.
+
+```{r}
+blindTSCV <- function (y, forecastfunction, h = 1, window = NULL, xreg = NULL, initial = 0, ...) 
+{
+    y <- as.ts(y)
+    n <- length(y)
+    e <- ts(matrix(NA_real_, nrow = n, ncol = h))
+    if (initial >= n) 
+        stop("initial period too long")
+    tsp(e) <- tsp(y)
+    if (!is.null(xreg)) {
+        xreg <- ts(as.matrix(xreg))
+        if (NROW(xreg) != length(y)) 
+            stop("xreg must be of the same size as y")
+        xreg <- ts(rbind(xreg, matrix(NA, nrow = h, ncol = NCOL(xreg))), 
+            start = start(y), frequency = frequency(y))
+    }
+    if (is.null(window)) 
+        indx <- seq(1 + initial, n - 1L)
+    else indx <- seq(window + initial, n - 1L, by = 1L)
+    for (i in indx) {
+        y_subset <- subset(y, start = ifelse(is.null(window), 
+            1L, ifelse(i - window >= 0L, i - window + 1L, stop("small window"))), 
+            end = i)
+        if (is.null(xreg)) {
+            fc <- try(suppressWarnings(forecastfunction(y_subset, 
+                h = h, ...)), silent = TRUE)
+        }
+        else {
+            xreg_subset <- subset(xreg, start = ifelse(is.null(window), 
+                1L, ifelse(i - window >= 0L, i - window + 1L, 
+                  stop("small window"))), end = i)
+            #xreg_future <- subset(xreg, start = i + 1, end = i + h)#AXVIG commented this out
+            fc <- try(suppressWarnings(forecastfunction(y_subset, h = h,
+                                                        xreg = xreg_subset)),#I modified this line to get rid of the reference to newxreg, since my forecast function will do this for me without "cheating" by simply looking ahead in the full xreg table and using known values. 
+                silent = TRUE)
+        }
+        if (!is.element("try-error", class(fc))) {
+            e[i, ] <- y[i + (1:h)] - fc$mean
+        }
+    }
+    if (h == 1) {
+        return(e[, 1L])
+    }
+    else {
+        colnames(e) <- paste("h=", 1:h, sep = "")
+        return(e)
+    }
+}
+
+
+
+
+```
+
+
+```{r}
+mod1Forecast = function(dataset,h,xreg)
+{
+  mod = Arima(dataset,order = c(0,1,1),xreg  = xreg)
+  rmod = Arima(xreg,order = c(0,1,0))
+  rfcast = forecast(rmod,h = h)
+  forecastRegressor = rfcast$mean
+  fcast =  forecast(mod,xreg = forecastRegressor)
+  return(fcast)
+}
+hope1 = blindTSCV(y = ts(train$totalCrimes, start = c(2021,1), freq = 365),forecastfunction = mod1Forecast,h = 15,xreg = train$totalCalls)
+hope1^2 %>% colMeans(na.rm = TRUE) %>% sqrt()
+
+```
+After trying a few variations of the rmod and mod Arima parameters, the intuitive auto.arima provided parameters for the high-911 calls seem to give the lowest RMSE. Let's see how this compares to other regressers!
+But first, lets see if using the whole dataset with an autoarima yields different parameters, and perhaps a better RMSE!
+
+```{r}
+cheatMod1 <- auto.arima(ts(df$totalCrimes, start = c(2021,1), freq = 365), xreg = df$totalCalls)
+cheatMod2 <- auto.arima(ts(df$totalCrimes, start = c(2021,1), freq = 365))
+
+summary(cheatMod1)
+summary(cheatMod2)
+```
+Suprisingly, this does not yield a better RMSE or AIC than the others.
+It looks like these RMSE values are slightly worse, so we can discard the attempted cheating model, thankfully!
+Let's use the 1,1,1 parameters to see if it yields better RMSE, since that is what autoarima gave us for just the total crimes without any total call regresser.
+```{r}
+mod1Forecast2 = function(dataset,h,xreg)
+{
+  mod = Arima(dataset,order = c(1,1,1),xreg  = xreg)
+  rmod = Arima(xreg,order = c(0,1,0))
+  rfcast = forecast(rmod,h = h)
+  forecastRegressor = rfcast$mean
+  fcast =  forecast(mod,xreg = forecastRegressor)
+  return(fcast)
+}
+hope12 = blindTSCV(y = ts(train$totalCrimes, start = c(2021,1), freq = 365),forecastfunction = mod1Forecast2,h = 15,xreg = train$totalCalls)
+hope12^2 %>% colMeans(na.rm = TRUE) %>% sqrt()
+
+
+```
+
+
+```{r}
+mod2Forecast = function(dataset,h,xreg)
+{
+  mod = Arima(dataset,order = c(0,1,1),xreg  = xreg)
+  rmod = Arima(xreg,order = c(0,1,0))
+  rfcast = forecast(rmod,h = h)
+  forecastRegressor = rfcast$mean
+  fcast =  forecast(mod,xreg = forecastRegressor)
+  return(fcast)
+}
+hope2 = blindTSCV(y = ts(train$totalCrimes, start = c(2021,1), freq = 365),forecastfunction = mod2Forecast,h = 15,xreg = train$totalCalls.y)
+hope2^2 %>% colMeans(na.rm = TRUE) %>% sqrt()
+
+```
+```{r}
+mod3Forecast = function(dataset,h,xreg)
+{
+  mod = Arima(dataset,order = c(2,0,1),xreg  = xreg)
+  rmod = Arima(xreg,order = c(0,1,0))
+  rfcast = forecast(rmod,h = h)
+  forecastRegressor = rfcast$mean
+  fcast =  forecast(mod,xreg = forecastRegressor)
+  return(fcast)
+}
+hope3 = blindTSCV(y = ts(train$totalCrimes, start = c(2021,1), freq = 365),forecastfunction = mod3Forecast,h = 15,xreg = train$temp)
+hope3^2 %>% colMeans(na.rm = TRUE) %>% sqrt()
+
+
+
+```
+Let's try high-calls and temperature as predictors!
+```{r}
+mod4Forecast = function(dataset,h,xreg)
+{
+  mod = Arima(dataset,order = c(0,0,1),xreg  = xreg)
+  rmodA = Arima(xreg[,1],order = c(0,1,0))#  ,include.mean = TRUE)
+  rmodB = Arima(xreg[,2],order = c(1,0,0)) #,include.mean = FALSE)
+  
+  rfcastA = forecast(rmodA,h = h)
+  rfcastB = forecast(rmodA,h = h)
+  forecastRegressors = cbind(rfcastA$mean,rfcastB$mean)
+  colnames(forecastRegressors) = colnames(xreg)
+  fcast =  forecast(mod,xreg = forecastRegressors)
+  return(fcast)
+}
+
+hope5 = blindTSCV(y = ts(train$totalCrimes, start = c(2021,1), freq = 365),forecastfunction = mod4Forecast,h = 15,xreg = cbind(train$totalCalls,train$temp))
+hope5^2 %>% colMeans(na.rm = TRUE) %>% sqrt()
+
+
+
+```
+After trying multiple parameter changes on this multiple-regresser model, it seems that the RMSE is much higher. This goes with Dr. Axvig's lesson 29 notes as well. This makes me wonder if the RMSE values are actually supposed to be that high, or if they are adding the amount to each other erroneously. I do not know the answer to this question, but the RMSE is so much higher that it seems like something is going wrong here.
+After a few different TSCV tests, it seems that the low-priority values have the lowest RMSE. This is strange; it does not vibe with previous results. Maybe there is something with the negative correlation playing into the data, but I am really not sure.
+Now let's do a scenario: what happens if the forecasted temperature in Baltimore is constantly 0 degrees Fehrenheit?
+
+
+```{r}
+tempauto <- auto.arima(train$temp)
+tempfcpart <- auto.arima(train$totalCrimes, xreg = tempauto$fitted)
+tempfc <- forecast(tempauto, h = 15)
+modfc <- forecast(tempfcpart, xreg  = tempfc$mean, h = 15)
+autoplot(modfc)+ xlab("Time") + ylab("Daily Crimes") + ggtitle("Daily Crimes with Avg Temp as Regresser") 
+
+modfc2 <- forecast(tempfcpart, xreg  = tempfc$mean*0, h = 15)
+autoplot(modfc2)+ xlab("Time") + ylab("Daily Crimes") + ggtitle("Daily Crimes with Zero Degrees Temperature as Regresser")
+
+rmse(as.numeric(unlist(as.data.frame(test$totalCrimes))), as.numeric(unlist(as.data.frame(modfc2))))
+
+```
+
+How about if it becomes a scorching wasteland of 120 degrees? 
+
+
+```{r}
+onetwenty <- gtools::na.replace(rep(NA,length(tempfc$mean)),120)
+onetwentyts <- ts(onetwenty)
+tempauto <- auto.arima(train$temp)
+tempfcpart <- auto.arima(train$totalCrimes, xreg = tempauto$fitted)
+tempfc <- forecast(tempauto, h = 15)
+modfc <- forecast(tempfcpart, xreg  = onetwentyts, h = 15)
+autoplot(modfc)+ xlab("Time") + ylab("Daily Crimes") + ggtitle("Daily Crimes with 120 Degrees as Regresser") 
+rmse(as.numeric(unlist(as.data.frame(test$totalCrimes))), as.numeric(unlist(as.data.frame(modfc))))
+```
+
+
+Here, the RMSE for a forecasted temperature of zero degrees actually has a better RMSE than a temperature of 120 degrees, by about 2 units. It is not a huge difference, but means that the forecast of zero is closer to the fitted data than a forecast of 120 degrees. So, zero degree temperature days were closer to reality in Baltimore than 120 degree days over the predicted interval for the forecast.
+
+Now, lets look at some scenarios for 911 high/emergency calls.
+
+Let's use confidence intervals to help forecast; look at the 95th percentile for 911 calls based on our autoarima model and see how it impacts the forecast.
+```{r,warning = FALSE}
+nineauto <- auto.arima(train$totalCalls)
+ninefcpart <- auto.arima(train$totalCrimes, xreg = nineauto$fitted)
+ninefc <- forecast(nineauto, h = 15)
+modfc <- forecast(ninefcpart, xreg  = ninefc$upper[,2], h = 15)
+autoplot(modfc) + xlab("Time") + ylab("Daily Crimes") + ggtitle("Daily Crimes vs Emergency 911 Calls with 95th Percentile Interval") 
+rmse(as.numeric(unlist(as.data.frame(test$totalCrimes))), as.numeric(unlist(as.data.frame(modfc))))
+rmse
+```
+
+How bout the 5th percentile of 911 calls? The forecasts will be lower, but what will happen to the RMSE?
+
+
+```{r}
+nineauto <- auto.arima(train$totalCalls)
+ninefcpart <- auto.arima(train$totalCrimes, xreg = nineauto$fitted)
+ninefc <- forecast(nineauto, h = 15)
+modfc <- forecast(ninefcpart, xreg  = ninefc$lower[,2], h = 15)
+autoplot(modfc)+ xlab("Time") + ylab("Daily Crimes") + ggtitle("Daily Crimes vs Emergency 911 Calls with 5th Percentile Interval") 
+rmse(as.numeric(unlist(as.data.frame(test$totalCrimes))), as.numeric(unlist(as.data.frame(modfc))))
+
+
+```
+
+Here, the RMSE is quite a bit lower than the upper confidence interval, because the actual crime numbers decrease in the last 20 percent of the dataset.
+
+However, for both cases, in these forecasts, it seems that the high-priority calls data performs better in the high and low intervals than the temperature data at its extremes. This could mean that the high-priority data enables more flexibility in the prediction of the data, which could mean it is the more advantageous predictor after all.
+
+With prediction interval calculations, ARIMA-based intervals seem to be narrow. Per the textbook, this occurs because only the variation in the errors has been taken into account. However, I still think the high-priority call data is the best predictor overall for the crime data, and the last few models bear that out in the numbers, with lower RMSE values for the high-priority data, even though it did not perform the best in earlier models.
+
+From a future chapter, let's use a neural network model to predict crime data!
+
+```{r}
+fit <- nnetar(df$totalCrimes, lambda=0)
+plot(forecast(fit,h=50))
+
+fit2 <- nnetar(train$totalCrimes, lambda=0)
+ggplot() + autolayer(forecast(fit2,h=68)) + autolayer(ts(train$totalCrimes)) + autolayer(ts(test$totalCrimes,start = c(264)))+ xlab("Time") + ylab("Daily Crimes") + ggtitle("Daily Crimes Over Time") +
+  scale_color_manual(labels = c("Test Values", "Fitted Values"), values = c("green", "blue"))
+```
+The shape of the forecast values is strange, kind of like a spring tension graph, with the spiral nature of the data. It is similar to a random walk forecast, but with more variation at the first few forecasted values.
+Now I will simulate a few different paths that could be taken by forecasted plots.
+
+```{r,warning=FALSE}
+sim <- ts(matrix(0, nrow=30L, ncol=3L),
+  start=end(train$totalCrimes)[1L]+1L)
+for(i in seq(3))
+  sim[,i] <- simulate(fit, nsim=30L)
+autoplot(ts(train$totalCrimes)) + autolayer(sim) + autolayer(ts(test$totalCrimes, start = 264))+ xlab("Time") + ylab("Daily Crimes") + ggtitle("Daily Crimes Over Time") +
+  scale_color_manual(labels = c("1", "2","3", "Test Values"), values = c("blue", "red", "green","orange"))
+rmse(as.numeric(unlist(as.data.frame(test$totalCrimes))), as.numeric(unlist(as.data.frame(sim[,1]))))
+rmse(as.numeric(unlist(as.data.frame(test$totalCrimes))), as.numeric(unlist(as.data.frame(sim[,2]))))
+rmse(as.numeric(unlist(as.data.frame(test$totalCrimes))), as.numeric(unlist(as.data.frame(sim[,3]))))
+```
+Based on the RMSE, sim path number 2 is the best option here for a forecast of the next data, with an RMSE of 23.15. These paths seem to better fit the data than the auto.arima errors from previous forecasts, which points to neural networks being a viable option for prediction.
+Now I will make some confidence intervals using the neural network function.
+```{r}
+fcast <- forecast(fit, PI=TRUE, h=30,npaths = 20)
+autoplot(fcast)+ xlab("Time") + ylab("Daily Crimes") + ggtitle("Daily Crimes") 
+```
+This is a watered-down version of finding prediction intervals for the data. Normally, there would be 1000 simulations, so the npaths argument would be equal to 1000, but to make computation time faster, npaths is equal to 20. I really like the forecast in this case, as it even incorporates some drift along with wavy initial values. Out of all the forecast functions in this project, I think that the neural network one is my favorite. It probably uses some sort of sigmoid function, which I created for Project 2 for prediction, so sigmoids are near and dear to my heart. Also, it actually encapsulates some of the features of the data, like a downward ending trend, and can be simulated however many times someone wants. It seems to be a decent job of making forecasts, as well.
+
+In conclusion, I had mixed results with various tests that I tried. Because the data was not seasonal, it probably took away a lot of potential predictive power that could be accessed with previous datasets. However, in the end, I think that high-priority calls are the best able to predict crime data, followed by temperature in second place, and low-priority calls in third place.
+
+
+
